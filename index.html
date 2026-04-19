@@ -1,0 +1,150 @@
+<!DOCTYPE html><html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BeamNG Mod Health Tool V2</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script><style>
+body { font-family: Arial; background:#111; color:#eee; padding:20px; }
+button, input { width:100%; padding:10px; margin-top:10px; }
+.card { background:#1c1c1c; padding:10px; margin-top:10px; border-radius:8px; }
+.good { color:#4caf50; }
+.warn { color:#ff9800; }
+.bad { color:#f44336; }
+</style></head><body><h2>BeamNG Mod Health Tool V2</h2><input type="file" id="zipFile" accept=".zip">
+<button onclick="analyzeMod()">Analyze</button>
+<button onclick="fixAndExport()">Fix & Export Clean ZIP</button><div id="output" class="card"></div><script>
+let loadedZip = null;
+let report = [];
+
+function addIssue(type, msg) {
+  report.push(`[${type}] ${msg}`);
+}
+
+async function analyzeMod() {
+  const fileInput = document.getElementById('zipFile');
+  const output = document.getElementById('output');
+
+  if (!fileInput.files.length) {
+    alert("Select a ZIP file");
+    return;
+  }
+
+  loadedZip = await JSZip.loadAsync(fileInput.files[0]);
+  report = [];
+  let score = 100;
+
+  let hasJbeam = false;
+  let hasVehicleFolder = false;
+
+  for (const filename in loadedZip.files) {
+    const file = loadedZip.files[filename];
+
+    if (filename.includes("vehicles/")) hasVehicleFolder = true;
+    if (filename.endsWith(".jbeam")) hasJbeam = true;
+
+    if (!filename.endsWith(".jbeam") && !filename.endsWith(".json")) continue;
+
+    const text = await file.async("string");
+
+    // --- Forbidden refs ---
+    if (/mohawk|bruckell/i.test(text)) {
+      addIssue("BAD", `${filename} contains donor references`);
+      score -= 5;
+    }
+
+    // --- SlotType ---
+    if (text.includes('"slotType"') && !text.includes("malibu")) {
+      addIssue("WARN", `${filename} slotType not Malibu`);
+      score -= 5;
+    }
+
+    // --- Missing nodes ---
+    if (!text.includes('"nodes"')) {
+      addIssue("BAD", `${filename} missing nodes`);
+      score -= 10;
+    }
+
+    // --- Pivot detection ---
+    if (text.includes("hood") && !text.includes("hinge")) {
+      addIssue("WARN", `${filename} hood missing hinge`);
+      score -= 5;
+    }
+
+    if (text.includes("door") && !text.includes("hinge")) {
+      addIssue("WARN", `${filename} door missing hinge`);
+      score -= 5;
+    }
+
+    // --- Wheel alignment ---
+    if (text.includes("wheel") && !text.includes("hub")) {
+      addIssue("WARN", `${filename} wheel may lack proper hub alignment`);
+      score -= 5;
+    }
+
+  }
+
+  // --- Structure validation ---
+  if (!hasVehicleFolder) {
+    addIssue("BAD", "Missing vehicles/ folder");
+    score -= 15;
+  }
+
+  if (!hasJbeam) {
+    addIssue("BAD", "No JBeam files found");
+    score -= 20;
+  }
+
+  score = Math.max(0, score);
+
+  output.innerHTML = `
+    <h3>Score: ${score}/100</h3>
+    <p>Issues Found: ${report.length}</p>
+    <pre>${report.join("\n")}</pre>`;
+}
+
+async function fixAndExport() {
+if (!loadedZip) {
+alert("Analyze first!");
+return;
+}
+
+const newZip = new JSZip();
+
+for (const filename in loadedZip.files) {
+const file = loadedZip.files[filename];
+
+if (file.dir) {
+  newZip.folder(filename);
+  continue;
+}
+
+let content = await file.async("string");
+
+if (filename.endsWith(".jbeam") || filename.endsWith(".json")) {
+
+  content = content.replace(/mohawk/gi, "malibu");
+  content = content.replace(/bruckell/gi, "malibu");
+  content = content.replace(/mo_/g, "malibu_");
+  content = content.replace(/"slotType"\s*:\s*".*?"/g, `"slotType": "malibu_main"`);
+
+  // basic node fix
+  if (!content.includes('"nodes"')) {
+    content += '\n"nodes": []\n';
+  }
+}
+
+newZip.file(filename, content);
+
+}
+
+const blob = await newZip.generateAsync({ type: "blob" });
+
+const link = document.createElement("a");
+link.href = URL.createObjectURL(blob);
+link.download = "malibu_fixed_v2.zip";
+link.click();
+}
+</script>
+
+</body>
+</html>
