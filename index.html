@@ -1,23 +1,44 @@
 <!DOCTYPE html><html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>BeamNG Mod Health Tool V2</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script><style>
+<title>BeamNG Mod Health Tool V3</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"><script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script><style>
 body { font-family: Arial; background:#111; color:#eee; padding:20px; }
 button, input { width:100%; padding:10px; margin-top:10px; }
 .card { background:#1c1c1c; padding:10px; margin-top:10px; border-radius:8px; }
 .good { color:#4caf50; }
 .warn { color:#ff9800; }
 .bad { color:#f44336; }
-</style></head><body><h2>BeamNG Mod Health Tool V2</h2><input type="file" id="zipFile" accept=".zip">
-<button onclick="analyzeMod()">Analyze</button>
-<button onclick="fixAndExport()">Fix & Export Clean ZIP</button><div id="output" class="card"></div><script>
+</style></head><body><h2>BeamNG Mod Health Tool V3</h2><input type="file" id="zipFile" accept=".zip">
+<input type="text" id="carNameOverride" placeholder="Override vehicle name (optional)">
+<label>
+  <input type="checkbox" id="strictMode"> Strict Mode (BeamNG standards)
+</label><button onclick="analyzeMod()">Analyze</button>
+<button onclick="fixAndExport()">Fix & Export Clean ZIP</button>
+
+<div id="output" class="card"></div><script>
 let loadedZip = null;
 let report = [];
+let detectedVehicles = [];
 
 function addIssue(type, msg) {
   report.push(`[${type}] ${msg}`);
+}
+
+function detectVehicles(zip) {
+  let vehicles = new Set();
+
+  for (const filename in zip.files) {
+    const match = filename.match(/vehicles\/([^\/]+)\//);
+    if (match) vehicles.add(match[1]);
+  }
+
+  return [...vehicles];
+}
+
+function detectVehicleName(zip) {
+  const list = detectVehicles(zip);
+  return list.length ? list[0] : "custom_vehicle";
 }
 
 async function analyzeMod() {
@@ -31,42 +52,40 @@ async function analyzeMod() {
 
   loadedZip = await JSZip.loadAsync(fileInput.files[0]);
   report = [];
-  let score = 100;
 
-  let hasJbeam = false;
-  let hasVehicleFolder = false;
+  detectedVehicles = detectVehicles(loadedZip);
+
+  const strict = document.getElementById("strictMode").checked;
+
+  let score = 100;
 
   for (const filename in loadedZip.files) {
     const file = loadedZip.files[filename];
-
-    if (filename.includes("vehicles/")) hasVehicleFolder = true;
-    if (filename.endsWith(".jbeam")) hasJbeam = true;
 
     if (!filename.endsWith(".jbeam") && !filename.endsWith(".json")) continue;
 
     const text = await file.async("string");
 
-    // --- Forbidden refs ---
-    if (/mohawk|bruckell/i.test(text)) {
-      addIssue("BAD", `${filename} contains donor references`);
+    // --- multi vehicle awareness ---
+    if (detectedVehicles.length > 1) {
+      addIssue("WARN", `Multiple vehicles detected: ${detectedVehicles.join(", ")}`);
       score -= 5;
+      break;
     }
 
-    // --- SlotType ---
-    if (text.includes('"slotType"') && !text.includes("malibu")) {
-      addIssue("WARN", `${filename} slotType not Malibu`);
-      score -= 5;
-    }
-
-    // --- Missing nodes ---
+    // --- structure checks ---
     if (!text.includes('"nodes"')) {
       addIssue("BAD", `${filename} missing nodes`);
       score -= 10;
     }
 
-    // --- Pivot detection ---
-    if (text.includes("hood") && !text.includes("hinge")) {
-      addIssue("WARN", `${filename} hood missing hinge`);
+    if (strict && !filename.includes("vehicles/")) {
+      addIssue("BAD", `${filename} not in vehicles/ folder (strict mode)`);
+      score -= 10;
+    }
+
+    if (/mohawk|bruckell/i.test(text)) {
+      addIssue("BAD", `${filename} contains donor references`);
       score -= 5;
     }
 
@@ -75,30 +94,18 @@ async function analyzeMod() {
       score -= 5;
     }
 
-    // --- Wheel alignment ---
-    if (text.includes("wheel") && !text.includes("hub")) {
-      addIssue("WARN", `${filename} wheel may lack proper hub alignment`);
+    if (text.includes("hood") && !text.includes("hinge")) {
+      addIssue("WARN", `${filename} hood missing hinge`);
       score -= 5;
     }
-
-  }
-
-  // --- Structure validation ---
-  if (!hasVehicleFolder) {
-    addIssue("BAD", "Missing vehicles/ folder");
-    score -= 15;
-  }
-
-  if (!hasJbeam) {
-    addIssue("BAD", "No JBeam files found");
-    score -= 20;
   }
 
   score = Math.max(0, score);
 
   output.innerHTML = `
     <h3>Score: ${score}/100</h3>
-    <p>Issues Found: ${report.length}</p>
+    <p>Vehicles detected: ${detectedVehicles.length ? detectedVehicles.join(", ") : "none"}</p>
+    <p>Issues: ${report.length}</p>
     <pre>${report.join("\n")}</pre>`;
 }
 
@@ -107,6 +114,12 @@ if (!loadedZip) {
 alert("Analyze first!");
 return;
 }
+
+const override = document.getElementById("carNameOverride").value;
+const strict = document.getElementById("strictMode").checked;
+
+const vehicles = detectVehicles(loadedZip);
+const baseName = override || vehicles[0] || "custom_vehicle";
 
 const newZip = new JSZip();
 
@@ -122,14 +135,19 @@ let content = await file.async("string");
 
 if (filename.endsWith(".jbeam") || filename.endsWith(".json")) {
 
-  content = content.replace(/mohawk/gi, "malibu");
-  content = content.replace(/bruckell/gi, "malibu");
-  content = content.replace(/mo_/g, "malibu_");
-  content = content.replace(/"slotType"\s*:\s*".*?"/g, `"slotType": "malibu_main"`);
+  // remove donor refs safely
+  content = content.replace(/mohawk|bruckell/gi, baseName);
+  content = content.replace(/\bmo_/g, baseName + "_");
 
-  // basic node fix
-  if (!content.includes('"nodes"')) {
-    content += '\n"nodes": []\n';
+  // slot fix
+  content = content.replace(
+    /"slotType"\s*:\s*".*?"/g,
+    `"slotType": "${baseName}_main"`
+  );
+
+  // strict mode enforcement
+  if (strict && !filename.includes("vehicles/")) {
+    continue; // skip invalid structure files
   }
 }
 
@@ -141,7 +159,7 @@ const blob = await newZip.generateAsync({ type: "blob" });
 
 const link = document.createElement("a");
 link.href = URL.createObjectURL(blob);
-link.download = "malibu_fixed_v2.zip";
+link.download = "${baseName}_fixed_v3.zip";
 link.click();
 }
 </script>
